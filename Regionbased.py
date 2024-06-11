@@ -1,58 +1,44 @@
 import cv2
 import numpy as np
-import tkinter as tk
+import threading
 
 # Load YOLO
-net = cv2.dnn.readNet('yolov3.weights', 'yolov3.cfg')
-layer_names = net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+def load_yolo():
+    net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
+    layer_names = net.getLayerNames()
+    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers().flatten()]
+    with open("coco.names", "r") as f:
+        classes = [line.strip() for line in f.readlines()]
+    return net, output_layers, classes
 
-# Load the COCO class labels
-with open('coco.names', "r") as f:
-    classes = [line.strip() for line in f.readlines()]
-
-# Initialize tkinter to get screen size
-root = tk.Tk()
-screen_width = root.winfo_screenwidth()
-screen_height = root.winfo_screenheight()
-root.destroy()
-
-# Initialize video capture (0 for webcam or provide a video file path)
-cap = cv2.VideoCapture(0)
-
-# Set the frame size to full screen
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, screen_width)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, screen_height)
-
-# Define the coordinates of the restricted area (example: a polygon)
-restricted_area = np.array([[100, 50], [300, 50], [300, 400], [100, 400]])
-
-while True:
-    _, frame = cap.read()
+# Detect objects
+def detect_objects(frame, net, output_layers):
     height, width, channels = frame.shape
-
-    # Detect objects
     blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
     net.setInput(blob)
     outs = net.forward(output_layers)
+    return outs, height, width
 
-    class_ids = []
-    confidences = []
+# Draw labels and check objects
+def draw_labels_and_check_objects(img, outs, height, width, classes):
     boxes = []
+    confidences = []
+    class_ids = []
+
+    water_bottle_detected_left = False
+    water_bottle_detected_right = False
 
     for out in outs:
         for detection in out:
             scores = detection[5:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
-            if confidence > 0.5 and classes[class_id] == "person":
-                # Object detected
+            if confidence > 0.5 and classes[class_id] == 'person':  
                 center_x = int(detection[0] * width)
                 center_y = int(detection[1] * height)
                 w = int(detection[2] * width)
                 h = int(detection[3] * height)
 
-                # Rectangle coordinates
                 x = int(center_x - w / 2)
                 y = int(center_y - h / 2)
 
@@ -60,37 +46,72 @@ while True:
                 confidences.append(float(confidence))
                 class_ids.append(class_id)
 
+                if center_x < width // 2:
+                    water_bottle_detected_left = True
+                else:
+                    water_bottle_detected_right = True
+
     indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
 
-    restricted_count = 0
-    non_restricted_count = 0
-
+    font = cv2.FONT_HERSHEY_PLAIN
     for i in range(len(boxes)):
         if i in indexes:
             x, y, w, h = boxes[i]
             label = str(classes[class_ids[i]])
-            color = (0, 255, 0)
-            if cv2.pointPolygonTest(restricted_area, (x + w // 2, y + h // 2), False) >= 0:
-                color = (0, 0, 255)
-                restricted_count += 1
-            else:
-                non_restricted_count += 1
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            if x + w // 2 < width // 2:  
+                color = (0, 255, 0)  
+            else:  
+                color = (0, 0, 255)  
+            cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(img, label, (x, y - 5), font, 1, color, 1)
 
-    # Draw restricted area
-    cv2.polylines(frame, [restricted_area], isClosed=True, color=(0, 0, 255), thickness=2)
+    return img, water_bottle_detected_left, water_bottle_detected_right
 
-    # Display counts
-    cv2.putText(frame, f"Restricted Area: {restricted_count}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(frame, f"Non-Restricted Area: {non_restricted_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+# Video capture thread
+class VideoCaptureThread(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self.cap = cv2.VideoCapture(0)
+        self.frame = None
+        self.running = True
 
-    # Show the frame
-    cv2.imshow("Frame", frame)
+    def run(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                print("Error: Failed to capture image.")
+                break
+            self.frame = frame
 
-    # Exit on pressing 'q'
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    def stop(self):
+        self.running = False
+        self.cap.release()
 
-cap.release()
-cv2.destroyAllWindows()
+# Object detection thread
+class ObjectDetectionThread(threading.Thread):
+    def __init__(self, video_capture_thread, net, output_layers, classes):
+        threading.Thread.__init__(self)
+        self.video_capture_thread = video_capture_thread
+        self.net = net
+        self.output_layers = output_layers
+        self.classes = classes
+        self.running = True
+
+    def run(self):
+        while self.running:
+            frame = self.video_capture_thread.frame
+            if frame is not None:
+                outs, height, width = detect_objects(frame, self.net, self.output_layers)
+                frame, water_bottle_detected_left, water_bottle_detected_right = draw_labels_and_check_objects(frame, outs, height, width, self.classes)
+
+                # Draw the partitions
+                cv2.line(frame, (width // 2, 0), (width // 2, height), (255, 0, 0), 2)
+
+                # Display the output status
+                if water_bottle_detected_left:
+                    print("Unrestricted area")
+                if water_bottle_detected_right:
+                    print("Restricted area")
+
+                cv2.imshow("Image", frame)
+                if
