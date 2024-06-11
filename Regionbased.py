@@ -1,25 +1,22 @@
 import cv2
 import numpy as np
-import threading
 
 # Load YOLO
 def load_yolo():
-    net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
+    net = cv2.dnn.readNet("yolov3-tiny.weights", "yolov3-tiny.cfg")  # Use YOLOv3-tiny
     layer_names = net.getLayerNames()
     output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers().flatten()]
     with open("coco.names", "r") as f:
         classes = [line.strip() for line in f.readlines()]
     return net, output_layers, classes
 
-# Detect objects
-def detect_objects(frame, net, output_layers):
-    height, width, channels = frame.shape
-    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+def detect_objects(img, net, output_layers):
+    height, width, channels = img.shape
+    blob = cv2.dnn.blobFromImage(img, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
     net.setInput(blob)
     outs = net.forward(output_layers)
     return outs, height, width
 
-# Draw labels and check objects
 def draw_labels_and_check_objects(img, outs, height, width, classes):
     boxes = []
     confidences = []
@@ -33,7 +30,7 @@ def draw_labels_and_check_objects(img, outs, height, width, classes):
             scores = detection[5:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
-            if confidence > 0.5 and classes[class_id] == 'person':  
+            if confidence > 0.5 and classes[class_id] == 'person':  # Assuming 'person' is in coco.names
                 center_x = int(detection[0] * width)
                 center_y = int(detection[1] * height)
                 w = int(detection[2] * width)
@@ -58,82 +55,52 @@ def draw_labels_and_check_objects(img, outs, height, width, classes):
         if i in indexes:
             x, y, w, h = boxes[i]
             label = str(classes[class_ids[i]])
-            if x + w // 2 < width // 2:  
-                color = (0, 255, 0)  
-            else:  
-                color = (0, 0, 255)  
+            if x + w // 2 < width // 2:
+                color = (0, 255, 0)  # Green color
+            else:
+                color = (0, 0, 255)  # Red color
             cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
             cv2.putText(img, label, (x, y - 5), font, 1, color, 1)
 
     return img, water_bottle_detected_left, water_bottle_detected_right
 
-# Video capture thread
-class VideoCaptureThread(threading.Thread):
-    def __init__(self):
-        threading.Thread.__init__(self)
-        self.cap = cv2.VideoCapture(0)
-        self.frame = None
-        self.running = True
+def start_video_capture():
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Lower resolution to 320x240
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
-    def run(self):
-        while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                print("Error: Failed to capture image.")
-                break
-            self.frame = frame
+    if not cap.isOpened():
+        print("Error: Could not open video capture.")
+        return
 
-    def stop(self):
-        self.running = False
-        self.cap.release()
-
-# Object detection thread
-class ObjectDetectionThread(threading.Thread):
-    def __init__(self, video_capture_thread, net, output_layers, classes):
-        threading.Thread.__init__(self)
-        self.video_capture_thread = video_capture_thread
-        self.net = net
-        self.output_layers = output_layers
-        self.classes = classes
-        self.running = True
-
-    def run(self):
-        while self.running:
-            frame = self.video_capture_thread.frame
-            if frame is not None:
-                outs, height, width = detect_objects(frame, self.net, self.output_layers)
-                frame, water_bottle_detected_left, water_bottle_detected_right = draw_labels_and_check_objects(frame, outs, height, width, self.classes)
-
-                # Draw the partitions
-                cv2.line(frame, (width // 2, 0), (width // 2, height), (255, 0, 0), 2)
-
-                # Display the output status
-                if water_bottle_detected_left:
-                    print("Unrestricted area")
-                if water_bottle_detected_right:
-                    print("Restricted area")
-
-                cv2.imshow("Image", frame)
-                ifcv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
-    def stop(self):
-        self.running = False
-
-if __name__ == "__main__":
     net, output_layers, classes = load_yolo()
-
-    video_capture_thread = VideoCaptureThread()
-    object_detection_thread = ObjectDetectionThread(video_capture_thread, net, output_layers, classes)
-
-    video_capture_thread.start()
-    object_detection_thread.start()
+    frame_skip = 2  # Skip every other frame
 
     while True:
+        for _ in range(frame_skip):
+            ret, frame = cap.read()
+        if not ret:
+            print("Error: Failed to capture image.")
+            break
+
+        outs, height, width = detect_objects(frame, net, output_layers)
+        frame, water_bottle_detected_left, water_bottle_detected_right = draw_labels_and_check_objects(frame, outs,
+                                                                                                       height, width,
+                                                                                                       classes)
+
+        cv2.line(frame, (width // 2, 0), (width // 2, height), (255, 0, 0), 2)
+
+        if water_bottle_detected_left:
+            print("Unrestricted area")
+        if water_bottle_detected_right:
+            print("Restricted area")
+
+        cv2.imshow("Image", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    video_capture_thread.stop()
-    object_detection_thread.stop()
-
+    cap.release()
     cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    start_video_capture()
