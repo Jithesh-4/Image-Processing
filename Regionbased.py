@@ -114,4 +114,26 @@ class ObjectDetectionThread(threading.Thread):
                     print("Restricted area")
 
                 cv2.imshow("Image", frame)
-                if
+                ifcv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
+    def stop(self):
+        self.running = False
+
+if __name__ == "__main__":
+    net, output_layers, classes = load_yolo()
+
+    video_capture_thread = VideoCaptureThread()
+    object_detection_thread = ObjectDetectionThread(video_capture_thread, net, output_layers, classes)
+
+    video_capture_thread.start()
+    object_detection_thread.start()
+
+    while True:
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    video_capture_thread.stop()
+    object_detection_thread.stop()
+
+    cv2.destroyAllWindows()
